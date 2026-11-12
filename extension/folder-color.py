@@ -21,13 +21,16 @@
 # GNU General Public License for more details.
 
 import os, gettext, gi
+import logging
+
+LOG = logging.getLogger("folder-color")
 from pathlib import Path
 try:
     gi.require_version("Gtk", "4.0")
     gi.require_version("Gdk", "4.0")
     from gi.repository import Nautilus, GObject, Gio, GLib, Gtk, Gdk
     GTK4 = True
-except:
+except (ImportError, ValueError):
     gi.require_version("Gtk", "3.0")
     from gi.repository import Nautilus, GObject, Gio, GLib, Gtk
     GTK4 = False
@@ -88,7 +91,7 @@ class FolderColor:
         if GTK4:
             self.gio_settings = Gio.Settings.new("org.gnome.nautilus.icon-view")
             self.gio_settings.connect("changed::default-zoom-level", self.on_changed_zoom_level)
-            self.icon_size = ICON_SIZES[self.gio_settings.get_string("default-zoom-level")]
+            self.icon_size = ICON_SIZES.get(self.gio_settings.get_string("default-zoom-level"), 96)
 
             self._get_icon = self._get_icon_gtk4
         else:
@@ -96,31 +99,47 @@ class FolderColor:
 
     # GTK4: Needs for size in icon theme lookup
     def on_changed_zoom_level(self, settings, key="default-zoom-level"):
-        self.icon_size = ICON_SIZES[self.gio_settings.get_string(key)]
+        self.icon_size = ICON_SIZES.get(self.gio_settings.get_string(key), 96)
         self.set_colors_theme()
         self.set_emblems_theme()
     
     # GTK4
     def _get_icon_gtk4(self, icon_name, is_color=True):
-        """Get icon, label and URI"""
-        icon_theme = Gtk.IconTheme.get_for_display(Gdk.Display.get_default())
-        if is_color:
-            size_aux = self.icon_size
-        else:
-            size_aux = 24
-        icon = icon_theme.lookup_icon(icon_name, None, size_aux, 1, Gtk.TextDirection.LTR, Gtk.IconLookupFlags.FORCE_REGULAR)
-        if icon_theme.has_icon(icon_name):
-            return {"icon": Path(icon.get_icon_name()).stem, "uri": icon.get_file().get_uri()}
-        else:
-            return {"icon": "", "uri": ""}
-    
+        """Resolve a theme icon to a local file, without assuming one exists."""
+        empty = {"icon": "", "uri": ""}
+        display = Gdk.Display.get_default()
+        if display is None:
+            return empty
+        icon_theme = Gtk.IconTheme.get_for_display(display)
+        if not icon_theme.has_icon(icon_name):
+            return empty
+        size = self.icon_size if is_color else 24
+        try:
+            paintable = icon_theme.lookup_icon(
+                icon_name, None, size, 1, Gtk.TextDirection.LTR,
+                Gtk.IconLookupFlags.FORCE_REGULAR
+            )
+            if paintable is None:
+                return empty
+            icon_file = paintable.get_file()
+            # Symbolic/builtin/resource icons do not always have a file.
+            if icon_file is None:
+                return empty
+            uri = icon_file.get_uri()
+            if not uri:
+                return empty
+            return {"icon": icon_name, "uri": uri}
+        except (GLib.Error, AttributeError, TypeError, ValueError) as exc:
+            LOG.warning("Could not resolve icon %s: %s", icon_name, exc)
+            return empty
+
     # GTK3
     def _get_icon_gtk3(self, icon_name, dummy_is_color=False):
         """Get icon, label and URI"""
         icon_theme = Gtk.IconTheme.get_default()
         icon = icon_theme.lookup_icon(icon_name, 48, 0)
-        if icon is not None:
-            return {"icon": Path(icon.get_filename()).stem, "uri": "file://" + icon.get_filename()}
+        if icon is not None and icon.get_filename():
+            return {"icon": Path(icon.get_filename()).stem, "uri": Path(icon.get_filename()).as_uri()}
         else:
             return {"icon": "", "uri": ""}
     
@@ -177,8 +196,9 @@ class FolderColor:
             return color_param["icon"]
 
     def set_color(self, item, color, uri=True):
-        if self.is_modified:
-            self._set_restore_folder(item)
+        # Clear the previous custom icon regardless of another selected
+        # item's state; a menu-wide flag is not reliable per file.
+        self._set_restore_folder(item)
         item_aux = Gio.File.new_for_path(item)
         if uri:
             info = item_aux.query_info("metadata::custom-icon", 0, None)
@@ -193,7 +213,6 @@ class FolderColor:
         emblem_aux = []
         emblem_aux.append(emblem["icon"])
         emblems = list(emblem_aux)
-        emblems.append(None) # Needs
         item_aux = Gio.File.new_for_path(item)
         info = item_aux.query_info("metadata::emblems", 0, None)
         info.set_attribute_stringv("metadata::emblems", emblems)
@@ -207,7 +226,7 @@ class FolderColor:
  
     def _set_restore_folder(self, item):
         item_aux = Gio.File.new_for_path(item)
-        info = item_aux.query_info("metadata::custom-icon-name", 0, None)
+        info = item_aux.query_info("metadata::custom-icon,metadata::custom-icon-name", 0, None)
         info.set_attribute("metadata::custom-icon", Gio.FileAttributeType.INVALID, 0)
         info.set_attribute("metadata::custom-icon-name", Gio.FileAttributeType.INVALID, 0)
         item_aux.set_attributes_from_info(info, 0, None)
@@ -219,23 +238,27 @@ class FolderColor:
         item_aux.set_attributes_from_info(info, 0, None)
 
     def _reload_icon(self, item):
-        os.utime(item, None)
+        # Changing a directory mtime merely to refresh its icon is intrusive
+        # and can fail on read-only paths. GIO metadata updates notify Nautilus.
+        pass
 
     def get_is_modified(self, items):
-        """Restore is enabled?"""
-        # For each dir, search custom icon or emblem
-        for item in items:
-            # Get metadata file/folder
-            item_path = item.get_location().get_path()
-            item = Gio.File.new_for_path(item_path)
-            info = item.query_info("metadata", 0, None)
-            # If any metadata then restore menu
-            if info.get_attribute_as_string("metadata::custom-icon-name") or \
-               info.get_attribute_as_string("metadata::custom-icon") or \
-               info.get_attribute_as_string("metadata::emblems"):
-                self.is_modified = True
-                return True
-        self.is_modified = False
+        """Check only relevant metadata attributes; tolerate missing files."""
+        attributes = (
+            "metadata::custom-icon,metadata::custom-icon-name,metadata::emblems"
+        )
+        for selected in items:
+            location = selected.get_location()
+            if location is None:
+                continue
+            try:
+                info = location.query_info(attributes, Gio.FileQueryInfoFlags.NONE, None)
+                if (info.get_attribute_as_string("metadata::custom-icon-name") or
+                    info.get_attribute_as_string("metadata::custom-icon") or
+                    info.get_attribute_stringv("metadata::emblems")):
+                    return True
+            except (GLib.Error, AttributeError, TypeError) as exc:
+                LOG.debug("Could not read metadata for %s: %s", location.get_uri(), exc)
         return False
 
 class FolderColorMenu(GObject.GObject, Nautilus.MenuProvider):
@@ -244,8 +267,10 @@ class FolderColorMenu(GObject.GObject, Nautilus.MenuProvider):
         GObject.Object.__init__(self)
         self.all_dirs = True
         self.foldercolor = FolderColor()
-        self.theme = Gtk.Settings.get_default().get_property("gtk-icon-theme-name")
-        self._load_theme()
+        settings = Gtk.Settings.get_default()
+        self.theme = settings.get_property("gtk-icon-theme-name") if settings else None
+        # Defer icon-theme work until the menu is actually requested.
+        self._theme_loaded = False
 
     def get_file_items(self, *args):
         """Click on directories or files"""
@@ -254,11 +279,16 @@ class FolderColorMenu(GObject.GObject, Nautilus.MenuProvider):
         elif len(args) == 1:
             items = args[0]
             window = None
-            
+        else:
+            return None
+
         if self._check_show_menu(items):
-            if self.theme != Gtk.Settings.get_default().get_property("gtk-icon-theme-name"):
-                self.theme = Gtk.Settings.get_default().get_property("gtk-icon-theme-name")
+            settings = Gtk.Settings.get_default()
+            current_theme = settings.get_property("gtk-icon-theme-name") if settings else None
+            if not self._theme_loaded or self.theme != current_theme:
+                self.theme = current_theme
                 self._load_theme()
+                self._theme_loaded = True
             return self._show_menu(items)
 
     def _load_theme(self):
