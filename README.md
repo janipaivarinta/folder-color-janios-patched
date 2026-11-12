@@ -26,6 +26,22 @@ The purpose of this fork is to improve the stability and compatibility of Folder
 
 Experimental. Stability testing is ongoing.
 
+## AI Transparency
+
+This project includes AI-assisted source code modifications
+and documentation using OpenAI ChatGPT (GPT-6).
+
+The modifications were developed through human-directed
+investigation, debugging, and testing.
+
+For details about AI involvement, development responsibilities,
+and verification limitations, see
+[AI-TRANSPARENCY.md](AI-TRANSPARENCY.md).
+
 ## License
 
-This project retains the original GPL licensing and copyright notices. Modifications are maintained as part of the JaniOS project.
+This project is licensed under the GNU General Public License
+version 3 or later (GPL-3.0-or-later).
+
+Originally developed by Marcos Alvarez Costales.
+JaniOS modifications maintained by Jani Päivärinta.
