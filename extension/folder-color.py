@@ -1,5 +1,14 @@
-# Folder Color 0.4.2 - https://github.com/costales/folder-color
+# Folder Color 0.4.2 - JaniOS Patched Edition
+# Original project: https://github.com/costales/folder-color
+# JaniOS fork: https://github.com/janipaivarinta/folder-color-janios-patched
+#
 # Copyright (C) 2012-2024 Marcos Alvarez Costales
+# Modifications Copyright (C) 2026 Jani Päivärinta
+#
+# Modified for improved compatibility and stability with
+# Nautilus, GTK4, and Debian 13 (trixie).
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
